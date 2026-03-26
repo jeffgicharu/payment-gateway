@@ -1,0 +1,10 @@
+target/
+.idea/
+*.iml
+.vscode/
+*.swp
+.DS_Store
+*.log
+logs/
+.env
+*.properties.local

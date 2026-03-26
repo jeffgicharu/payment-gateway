@@ -1,0 +1,68 @@
+spring:
+  application:
+    name: payment-gateway
+  datasource:
+    url: jdbc:h2:mem:paymentdb;DB_CLOSE_DELAY=-1;MODE=PostgreSQL
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+  jpa:
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+  sql:
+    init:
+      mode: always
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: 8787
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+gateway:
+  security:
+    hmac-secret: c2FmYXJpY29tLXBheW1lbnQtZ2F0ZXdheS1obWFjLXNlY3JldC1rZXk=
+    api-key-header: X-API-Key
+    signature-header: X-Signature
+    timestamp-header: X-Timestamp
+    max-timestamp-drift-seconds: 300
+  redis:
+    enabled: false
+  webhook:
+    timeout-ms: 5000
+    max-retries: 3
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+---
+spring:
+  config:
+    activate:
+      on-profile: postgres
+  datasource:
+    url: jdbc:postgresql://localhost:5432/paymentdb
+    driver-class-name: org.postgresql.Driver
+    username: postgres
+    password: postgres
+  h2:
+    console:
+      enabled: false
+  jpa:
+    hibernate:
+      ddl-auto: none
