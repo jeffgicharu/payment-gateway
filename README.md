@@ -1,19 +1,19 @@
 # Payment Gateway
 
-If you've ever integrated with Safaricom's [Daraja API](https://developer.safaricom.co.ke/) to accept M-Pesa payments in your app, you know the pattern: you send a payment request, get a transaction ID back, and then wait for a callback telling you whether the payment went through. Behind the scenes, the gateway has to authenticate your API key, make sure you haven't sent the same request twice, check your daily limits, process the payment, and POST the result back to your server — retrying if your server is down.
+If you've ever integrated with Safaricom's [Daraja API](https://developer.safaricom.co.ke/) to accept M-Pesa payments in your app, you know the pattern: you send a payment request, get a transaction ID back, and then wait for a callback telling you whether the payment went through. Behind the scenes, the gateway has to authenticate your API key, make sure you haven't sent the same request twice, check your daily limits, process the payment, and POST the result back to your server, retrying if your server is down.
 
 This project is that gateway. It handles M-Pesa STK Push, card payments, and bank transfers. Merchants authenticate with API keys, payments are deduplicated with idempotency locks, and results are delivered via HMAC-signed webhooks with automatic retry.
 
 ## What It Does
 
-- **Processes payments** — M-Pesa STK Push, card, and bank transfer, each generating a tracked transaction
-- **Prevents duplicate charges** — Redis-backed idempotency locks ensure a retried request never processes twice
-- **Rate limits merchants** — sliding window counter per merchant, remaining quota returned in response headers
-- **Delivers webhooks** — async callback to merchant's URL with exponential backoff retry (1s → 2s → 4s) and HMAC-signed payloads so merchants can verify authenticity
-- **Settles transactions** — batches completed transactions, deducts the 1.5% processing fee, and creates a settlement record
-- **Reverses payments** — completed transactions can be reversed, with state validation and audit logging
-- **Tracks everything** — every state change (initiated → processing → completed → settled) is recorded in an append-only audit log
-- **Tags every request** — a correlation ID is assigned at entry, carried through all logs, and returned in the response header for end-to-end tracing
+- **Processes payments**: M-Pesa STK Push, card, and bank transfer, each generating a tracked transaction
+- **Prevents duplicate charges**: Redis-backed idempotency locks ensure a retried request never processes twice
+- **Rate limits merchants**: sliding window counter per merchant, remaining quota returned in response headers
+- **Delivers webhooks**: async callback to merchant's URL with exponential backoff retry (1s → 2s → 4s) and HMAC-signed payloads so merchants can verify authenticity
+- **Settles transactions**: batches completed transactions, deducts the 1.5% processing fee, and creates a settlement record
+- **Reverses payments**: completed transactions can be reversed, with state validation and audit logging
+- **Tracks everything**: every state change (initiated → processing → completed → settled) is recorded in an append-only audit log
+- **Tags every request**: a correlation ID is assigned at entry, carried through all logs, and returned in the response header for end-to-end tracing
 
 ## How Authentication Works
 
@@ -154,18 +154,18 @@ src/main/java/com/gateway/
 
 The schema uses indexed tables optimized for the query patterns of a payment system:
 
-- **merchants** — API credentials, callback URLs, daily limits
-- **payment_transactions** — Core transaction data with status lifecycle
-- **settlement_batches** — Batched settlement records with fee breakdowns
-- **webhook_deliveries** — Full delivery history for debugging callbacks
-- **audit_log** — Immutable append-only audit trail
+- **merchants**: API credentials, callback URLs, daily limits
+- **payment_transactions**: core transaction data with status lifecycle
+- **settlement_batches**: batched settlement records with fee breakdowns
+- **webhook_deliveries**: full delivery history for debugging callbacks
+- **audit_log**: immutable append-only audit trail
 
 Key indexes target the hot paths: transaction lookup by ID, merchant transaction listing, settlement queries, and audit trail retrieval.
 
 ### In-Memory (Redis)
 
-- **Idempotency locks** — `SETNX` with 24h TTL prevents duplicate processing
-- **Rate limit counters** — Per-merchant sliding window with `INCR` + `EXPIRE`
+- **Idempotency locks**: `SETNX` with 24h TTL prevents duplicate processing
+- **Rate limit counters**: Per-merchant sliding window with `INCR` + `EXPIRE`
 
 Both services fall back to `ConcurrentHashMap` when Redis is unavailable, making the application runnable without any external dependencies.
 
