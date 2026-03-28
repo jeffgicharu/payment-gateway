@@ -1,38 +1,21 @@
 # Payment Gateway
 
-A production-grade payment processing gateway inspired by Safaricom's [Daraja API](https://developer.safaricom.co.ke/). Handles multi-channel payment initiation (M-Pesa STK Push, card, bank transfer), processing, reversal, settlement, and merchant webhook delivery — with the security, reliability, and observability patterns required for financial-grade systems.
+If you've ever integrated with Safaricom's [Daraja API](https://developer.safaricom.co.ke/) to accept M-Pesa payments in your app, you know the pattern: you send a payment request, get a transaction ID back, and then wait for a callback telling you whether the payment went through. Behind the scenes, the gateway has to authenticate your API key, make sure you haven't sent the same request twice, check your daily limits, process the payment, and POST the result back to your server — retrying if your server is down.
 
-## Why This Architecture
+This project is that gateway. It handles M-Pesa STK Push, card payments, and bank transfers. Merchants authenticate with API keys, payments are deduplicated with idempotency locks, and results are delivered via HMAC-signed webhooks with automatic retry.
 
-Payment gateways fail in predictable ways: duplicate charges from retries, race conditions on concurrent requests, silent webhook failures, and transactions that disappear between services. Every design decision here addresses a specific production failure mode:
+## What It Does
 
-| Problem | Solution | Implementation |
-|---|---|---|
-| Network retry causes double charge | Idempotency keys with distributed locks | `IdempotencyService` — Redis `SETNX` with 24h TTL |
-| Merchant floods API during peak | Per-merchant rate limiting | `RateLimitService` — sliding window counter in Redis |
-| Merchant never receives callback | Webhook retry with backoff | `WebhookService` — exponential retry (1s/2s/4s), HMAC-signed payloads |
-| Can't trace a failed request | Correlation ID propagation | `CorrelationIdFilter` — injected at entry, logged via MDC, returned in headers |
-| API key compromised | HMAC request signing | `HmacSigner` — SHA-256 signatures verified on every request |
-| Support can't debug a dispute | Full audit trail | `AuditLog` — every state change recorded with actor and before/after values |
-| Settlement discrepancy | Fee calculation with audit | `PaymentService.settle()` — batched settlement with 1.5% fee deduction |
+- **Processes payments** — M-Pesa STK Push, card, and bank transfer, each generating a tracked transaction
+- **Prevents duplicate charges** — Redis-backed idempotency locks ensure a retried request never processes twice
+- **Rate limits merchants** — sliding window counter per merchant, remaining quota returned in response headers
+- **Delivers webhooks** — async callback to merchant's URL with exponential backoff retry (1s → 2s → 4s) and HMAC-signed payloads so merchants can verify authenticity
+- **Settles transactions** — batches completed transactions, deducts the 1.5% processing fee, and creates a settlement record
+- **Reverses payments** — completed transactions can be reversed, with state validation and audit logging
+- **Tracks everything** — every state change (initiated → processing → completed → settled) is recorded in an append-only audit log
+- **Tags every request** — a correlation ID is assigned at entry, carried through all logs, and returned in the response header for end-to-end tracing
 
-## Tech Stack
-
-| Layer | Technology | Why |
-|---|---|---|
-| Framework | Spring Boot 3.2 | Industry standard for Java microservices |
-| Language | Java 17 | LTS, pattern matching, records, sealed classes |
-| RDBMS | PostgreSQL (H2 for dev) | ACID transactions for payment data |
-| In-Memory DB | Redis | Idempotency locks, rate limiting, caching |
-| Security | HMAC-SHA256 + API keys | Request authenticity without OAuth complexity |
-| Observability | Structured logging + Actuator | Correlation IDs in every log line, health/metrics endpoints |
-| API Docs | SpringDoc OpenAPI | Auto-generated Swagger UI |
-| Containers | Docker + docker-compose | PostgreSQL + Redis + gateway in one command |
-| CI/CD | GitHub Actions | Build, test, Docker image on every push |
-
-## API Design
-
-### Authentication
+## How Authentication Works
 
 Every request to `/api/v1/*` requires:
 
