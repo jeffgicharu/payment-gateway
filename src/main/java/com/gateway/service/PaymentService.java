@@ -29,6 +29,7 @@ public class PaymentService {
     private final MerchantRepository merchantRepo;
     private final SettlementRepository settlementRepo;
     private final AuditLogRepository auditRepo;
+    private final RefundRepository refundRepo;
     private final IdempotencyService idempotencyService;
     private final RateLimitService rateLimitService;
     private final WebhookService webhookService;
@@ -148,6 +149,63 @@ public class PaymentService {
 
         audit("TRANSACTION", transactionId, "REVERSED", merchantId, oldStatus, "REVERSED");
         return toResponse(txn);
+    }
+
+    // ─── REFUNDS ────────────────────────────────────────────────────
+
+    @Transactional
+    public Refund refundPayment(String transactionId, String merchantId,
+                                BigDecimal refundAmount, String reason) {
+        PaymentTransaction txn = txnRepo.findByTransactionId(transactionId)
+                .orElseThrow(() -> new IllegalArgumentException("Transaction not found: " + transactionId));
+
+        if (!txn.getMerchantId().equals(merchantId)) {
+            throw new IllegalArgumentException("Transaction does not belong to this merchant");
+        }
+        if (txn.getStatus() != PaymentStatus.COMPLETED && txn.getStatus() != PaymentStatus.SETTLED) {
+            throw new IllegalStateException("Only completed or settled transactions can be refunded. Current: " + txn.getStatus());
+        }
+
+        BigDecimal alreadyRefunded = refundRepo.sumRefundedAmount(transactionId);
+        BigDecimal maxRefundable = txn.getAmount().subtract(alreadyRefunded);
+
+        if (refundAmount.compareTo(maxRefundable) > 0) {
+            throw new IllegalArgumentException(String.format(
+                    "Refund amount %s exceeds refundable balance %s (original: %s, already refunded: %s)",
+                    refundAmount, maxRefundable, txn.getAmount(), alreadyRefunded));
+        }
+
+        String refundId = "RFD-" + UUID.randomUUID().toString().substring(0, 10).toUpperCase();
+
+        Refund refund = Refund.builder()
+                .refundId(refundId)
+                .originalTransactionId(transactionId)
+                .merchantId(merchantId)
+                .amount(refundAmount)
+                .status("COMPLETED")
+                .reason(reason)
+                .processedAt(LocalDateTime.now())
+                .build();
+        refundRepo.save(refund);
+
+        // If fully refunded, mark original as reversed
+        BigDecimal totalRefunded = alreadyRefunded.add(refundAmount);
+        if (totalRefunded.compareTo(txn.getAmount()) >= 0) {
+            txn.setStatus(PaymentStatus.REVERSED);
+            txnRepo.save(txn);
+        }
+
+        audit("REFUND", refundId, "REFUNDED", merchantId,
+                "amount=" + refundAmount, "total_refunded=" + totalRefunded);
+
+        log.info("Refund {} created for transaction {}: {} KES (reason: {})",
+                refundId, transactionId, refundAmount, reason);
+
+        return refund;
+    }
+
+    public List<Refund> getRefunds(String transactionId) {
+        return refundRepo.findByOriginalTransactionIdOrderByCreatedAtDesc(transactionId);
     }
 
     // ─── SETTLEMENT ─────────────────────────────────────────────────

@@ -72,6 +72,20 @@ CREATE TABLE IF NOT EXISTS audit_log (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS refunds (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    refund_id VARCHAR(30) NOT NULL UNIQUE,
+    original_transaction_id VARCHAR(30) NOT NULL,
+    merchant_id VARCHAR(30) NOT NULL,
+    amount DECIMAL(15,2) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    reason VARCHAR(255),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    processed_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_refund_txn ON refunds(original_transaction_id);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_txn_merchant ON payment_transactions(merchant_id);
 CREATE INDEX IF NOT EXISTS idx_txn_status ON payment_transactions(status);

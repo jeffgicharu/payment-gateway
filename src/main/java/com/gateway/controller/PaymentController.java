@@ -4,6 +4,7 @@ import com.gateway.dto.request.PaymentRequest;
 import com.gateway.dto.response.GatewayResponse;
 import com.gateway.dto.response.PaymentResponse;
 import com.gateway.entity.AuditLog;
+import com.gateway.entity.Refund;
 import com.gateway.entity.SettlementBatch;
 import com.gateway.service.PaymentService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -101,5 +102,29 @@ public class PaymentController {
         String correlationId = (String) httpReq.getAttribute("correlationId");
         return ResponseEntity.ok(GatewayResponse.success(
                 paymentService.getAuditTrail("TRANSACTION", transactionId), correlationId));
+    }
+
+    @PostMapping("/{transactionId}/refund")
+    @Operation(summary = "Refund a payment (full or partial)")
+    public ResponseEntity<GatewayResponse<Refund>> refund(
+            @PathVariable String transactionId,
+            @RequestBody java.util.Map<String, Object> body,
+            HttpServletRequest httpReq) {
+        String merchantId = (String) httpReq.getAttribute("merchantId");
+        String correlationId = (String) httpReq.getAttribute("correlationId");
+        java.math.BigDecimal amount = new java.math.BigDecimal(body.get("amount").toString());
+        String reason = (String) body.getOrDefault("reason", "Merchant initiated refund");
+
+        Refund refund = paymentService.refundPayment(transactionId, merchantId, amount, reason);
+        return ResponseEntity.ok(GatewayResponse.success(refund, correlationId));
+    }
+
+    @GetMapping("/{transactionId}/refunds")
+    @Operation(summary = "List refunds for a transaction")
+    public ResponseEntity<GatewayResponse<List<Refund>>> getRefunds(
+            @PathVariable String transactionId, HttpServletRequest httpReq) {
+        String correlationId = (String) httpReq.getAttribute("correlationId");
+        return ResponseEntity.ok(GatewayResponse.success(
+                paymentService.getRefunds(transactionId), correlationId));
     }
 }
