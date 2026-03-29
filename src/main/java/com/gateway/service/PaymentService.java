@@ -254,6 +254,36 @@ public class PaymentService {
         return batch;
     }
 
+    public Map<String, Object> reconcileSettlement(String batchId) {
+        SettlementBatch batch = settlementRepo.findByBatchId(batchId)
+                .orElseThrow(() -> new IllegalArgumentException("Settlement batch not found: " + batchId));
+
+        List<PaymentTransaction> settledTxns = txnRepo.findByMerchantIdAndStatusOrderByInitiatedAtDesc(
+                batch.getMerchantId(), PaymentStatus.SETTLED);
+
+        BigDecimal actualTotal = settledTxns.stream()
+                .map(PaymentTransaction::getAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal actualFees = settledTxns.stream()
+                .map(t -> t.getFee() != null ? t.getFee() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal amountDiff = batch.getTotalAmount().subtract(actualTotal).abs();
+        BigDecimal feeDiff = batch.getTotalFees().subtract(actualFees).abs();
+        boolean balanced = amountDiff.compareTo(new BigDecimal("0.01")) < 0
+                && feeDiff.compareTo(new BigDecimal("0.01")) < 0;
+
+        return Map.of(
+                "batchId", batchId,
+                "expectedAmount", batch.getTotalAmount(),
+                "actualAmount", actualTotal,
+                "expectedFees", batch.getTotalFees(),
+                "actualFees", actualFees,
+                "balanced", balanced,
+                "transactionCount", settledTxns.size()
+        );
+    }
+
     // ─── QUERIES ────────────────────────────────────────────────────
 
     public PaymentResponse getTransaction(String transactionId) {

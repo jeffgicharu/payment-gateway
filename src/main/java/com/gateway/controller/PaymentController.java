@@ -86,6 +86,15 @@ public class PaymentController {
                 paymentService.settle(merchantId), correlationId));
     }
 
+    @GetMapping("/settle/{batchId}/reconcile")
+    @Operation(summary = "Reconcile a settlement batch", description = "Verify settlement totals match transaction sums")
+    public ResponseEntity<GatewayResponse<Map<String, Object>>> reconcileSettlement(
+            @PathVariable String batchId, HttpServletRequest httpReq) {
+        String correlationId = (String) httpReq.getAttribute("correlationId");
+        return ResponseEntity.ok(GatewayResponse.success(
+                paymentService.reconcileSettlement(batchId), correlationId));
+    }
+
     @GetMapping("/stats")
     @Operation(summary = "Merchant transaction analytics")
     public ResponseEntity<GatewayResponse<Map<String, Object>>> stats(HttpServletRequest httpReq) {
