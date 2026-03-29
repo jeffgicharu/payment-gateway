@@ -1,239 +1,181 @@
 # Payment Gateway
 
-If you've ever integrated with Safaricom's [Daraja API](https://developer.safaricom.co.ke/) to accept M-Pesa payments in your app, you know the pattern: you send a payment request, get a transaction ID back, and then wait for a callback telling you whether the payment went through. Behind the scenes, the gateway has to authenticate your API key, make sure you haven't sent the same request twice, check your daily limits, process the payment, and POST the result back to your server, retrying if your server is down.
+If you've ever integrated with Safaricom's [Daraja API](https://developer.safaricom.co.ke/) to accept M-Pesa payments in your app, you know the pattern: you send a payment request, get a transaction ID back, and then wait for a callback telling you whether the payment went through. Behind the scenes, the gateway has to authenticate your API key, make sure you haven't sent the same request twice, check your daily limits, process the payment, calculate the fee, and POST the result back to your server (retrying if your server is down).
 
-This project is that gateway. It handles M-Pesa STK Push, card payments, and bank transfers. Merchants authenticate with API keys, payments are deduplicated with idempotency locks, and results are delivered via HMAC-signed webhooks with automatic retry.
+This project is that gateway. It handles M-Pesa STK Push, card payments, and bank transfers. Merchants register through the API, authenticate with API keys, and process payments that are deduplicated, rate-limited, and fee-calculated per payment method. Results are delivered via HMAC-signed webhooks. Payments can be partially or fully refunded with overpayment protection. Everything settles into reconcilable batches.
 
 ## What It Does
 
-- **Processes payments**: M-Pesa STK Push, card, and bank transfer, each generating a tracked transaction
-- **Prevents duplicate charges**: Redis-backed idempotency locks ensure a retried request never processes twice
-- **Rate limits merchants**: sliding window counter per merchant, remaining quota returned in response headers
-- **Delivers webhooks**: async callback to merchant's URL with exponential backoff retry (1s → 2s → 4s) and HMAC-signed payloads so merchants can verify authenticity
-- **Settles transactions**: batches completed transactions, deducts the 1.5% processing fee, and creates a settlement record
-- **Reverses payments**: completed transactions can be reversed, with state validation and audit logging
-- **Tracks everything**: every state change (initiated → processing → completed → settled) is recorded in an append-only audit log
-- **Tags every request**: a correlation ID is assigned at entry, carried through all logs, and returned in the response header for end-to-end tracing
+**Payment processing:**
+- Accept M-Pesa STK Push, M-Pesa C2B/B2C, card, and bank transfer payments
+- Calculate fees per payment method (M-Pesa 1%, card 2.5%, bank 0.5%, with minimum floors)
+- Prevent duplicate charges using idempotency keys tied to merchant + reference
+- Rate limit per merchant with a sliding window counter
+- Enforce daily transaction limits per merchant
+- Track every payment through INITIATED, PROCESSING, COMPLETED/FAILED, SETTLED states
 
-## How Authentication Works
+**Merchant management:**
+- Register new merchants through the API and receive API key + secret
+- Rotate API keys without downtime
+- Activate/deactivate merchants
+- Update callback URLs and daily limits
 
-Every request to `/api/v1/*` requires:
+**Refunds:**
+- Full or partial refunds on completed or settled transactions
+- Track total refunded amount per transaction to prevent over-refunding
+- Multiple partial refunds against the same transaction until the original amount is exhausted
+- Separate refund records with their own lifecycle
 
-```
-X-API-Key: tk_live_a1b2c3d4e5f6g7h8i9j0
-```
+**Async callbacks:**
+- Receive M-Pesa and card processor callbacks at dedicated endpoints
+- Update transaction status based on processor result
+- Forward status to merchant via HMAC-signed webhook with exponential backoff retry
 
-For production, requests should also include HMAC signatures:
+**Settlement and reconciliation:**
+- Batch settle all completed transactions for a merchant
+- Calculate net payout after per-transaction fee deduction
+- Reconcile settlement batches against actual transaction sums
 
-```
-X-Signature: <HMAC-SHA256 of timestamp.method.path.body>
-X-Timestamp: <unix epoch seconds>
-```
+**Security and observability:**
+- API key authentication on all payment endpoints
+- HMAC-SHA256 request signing capability
+- Correlation ID assigned to every request, carried through logs, returned in response headers
+- Structured logging with correlation context
+- Full audit trail for every state change
 
-### Endpoints
-
-```
-POST   /api/v1/payments              Initiate a payment
-GET    /api/v1/payments/{txnId}      Query payment status
-GET    /api/v1/payments              List merchant transactions (paginated)
-POST   /api/v1/payments/{txnId}/reverse   Reverse a completed payment
-POST   /api/v1/payments/settle       Batch settle completed transactions
-GET    /api/v1/payments/stats        Transaction analytics by status/method
-GET    /api/v1/payments/audit/{txnId}     Full audit trail
-GET    /actuator/health              Service health check
-```
-
-### Payment Flow
-
-```
-Merchant                    Payment Gateway                  Payment Processor
-   |                              |                                |
-   |-- POST /payments ----------->|                                |
-   |   (API key + idempotency)    |                                |
-   |                              |-- check idempotency key ------>|
-   |                              |-- check rate limit ----------->|
-   |                              |-- validate merchant ---------->|
-   |                              |-- check daily limit ---------->|
-   |                              |                                |
-   |                              |-- initiate processing -------->|
-   |                              |<--- processing result ---------|
-   |                              |                                |
-   |                              |-- record audit trail           |
-   |<-- 201 PaymentResponse ------|                                |
-   |                              |                                |
-   |                              |-- async webhook delivery ----->|
-   |                              |   (HMAC-signed, retries)       |
-   |<-- POST callback (signed) ---|                                |
-```
-
-### Request/Response Example
-
-**Initiate M-Pesa STK Push:**
-```bash
-curl -X POST http://localhost:8787/api/v1/payments \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: tk_live_a1b2c3d4e5f6g7h8i9j0" \
-  -d '{
-    "paymentMethod": "MPESA_STK",
-    "amount": 5000.00,
-    "sourceAccount": "+254700000001",
-    "reference": "INV-2026-001",
-    "description": "Order #12345"
-  }'
-```
-
-**Response:**
-```json
-{
-  "code": 0,
-  "status": "SUCCESS",
-  "message": "Request processed",
-  "correlationId": "a1b2c3d4e5f6",
-  "data": {
-    "transactionId": "MP17119283740001",
-    "merchantId": "MCH-TESTSHOP",
-    "paymentMethod": "MPESA_STK",
-    "amount": 5000.00,
-    "currency": "KES",
-    "status": "COMPLETED",
-    "reference": "INV-2026-001",
-    "correlationId": "a1b2c3d4e5f6",
-    "initiatedAt": "2026-03-26T23:30:00",
-    "processedAt": "2026-03-26T23:30:01"
-  },
-  "timestamp": "2026-03-26T23:30:01"
-}
-```
-
-## Project Structure
-
-```
-src/main/java/com/gateway/
-├── PaymentGatewayApplication.java
-├── config/
-│   ├── AsyncConfig.java              # Async thread pool for webhooks
-│   └── ExceptionConfig.java          # Global error handling with correlation IDs
-├── controller/
-│   └── PaymentController.java        # Versioned REST API (v1)
-├── dto/
-│   ├── request/
-│   │   └── PaymentRequest.java       # Validated payment initiation request
-│   └── response/
-│       ├── GatewayResponse.java      # Standardized envelope with correlation ID
-│       └── PaymentResponse.java      # Payment status response
-├── entity/
-│   ├── AuditLog.java                 # Immutable audit trail entries
-│   ├── Merchant.java                 # API credentials and configuration
-│   ├── PaymentTransaction.java       # Core transaction record
-│   ├── SettlementBatch.java          # Batched settlement with fees
-│   └── WebhookDelivery.java          # Delivery attempts and responses
-├── enums/
-│   ├── PaymentMethod.java            # MPESA_STK, CARD, BANK_TRANSFER, etc.
-│   └── PaymentStatus.java            # INITIATED → PROCESSING → COMPLETED/FAILED → SETTLED
-├── repository/
-│   ├── AuditLogRepository.java
-│   ├── MerchantRepository.java
-│   ├── SettlementRepository.java
-│   ├── TransactionRepository.java    # Custom queries for aggregation and daily limits
-│   └── WebhookRepository.java
-├── security/
-│   ├── ApiKeyAuthFilter.java         # API key validation filter
-│   └── HmacSigner.java              # HMAC-SHA256 request signing/verification
-├── service/
-│   ├── IdempotencyService.java       # Redis-backed duplicate prevention
-│   ├── PaymentService.java           # Core payment lifecycle
-│   ├── RateLimitService.java         # Per-merchant sliding window rate limiter
-│   └── WebhookService.java           # Async webhook delivery with retry
-└── util/
-    └── CorrelationIdFilter.java      # Distributed tracing via X-Correlation-ID
-```
-
-## Database Design
-
-### Relational (PostgreSQL)
-
-The schema uses indexed tables optimized for the query patterns of a payment system:
-
-- **merchants**: API credentials, callback URLs, daily limits
-- **payment_transactions**: core transaction data with status lifecycle
-- **settlement_batches**: batched settlement records with fee breakdowns
-- **webhook_deliveries**: full delivery history for debugging callbacks
-- **audit_log**: immutable append-only audit trail
-
-Key indexes target the hot paths: transaction lookup by ID, merchant transaction listing, settlement queries, and audit trail retrieval.
-
-### In-Memory (Redis)
-
-- **Idempotency locks**: `SETNX` with 24h TTL prevents duplicate processing
-- **Rate limit counters**: Per-merchant sliding window with `INCR` + `EXPIRE`
-
-Both services fall back to `ConcurrentHashMap` when Redis is unavailable, making the application runnable without any external dependencies.
-
-## Running
-
-### Local development (zero dependencies)
+## Quick Start
 
 ```bash
 mvn spring-boot:run
+# Swagger UI: http://localhost:8787/swagger-ui.html
 ```
 
-Starts with H2 in-memory database and in-memory Redis fallback. Swagger UI at [http://localhost:8787/swagger-ui.html](http://localhost:8787/swagger-ui.html).
-
-### With Docker (production-like)
+Or with Docker (PostgreSQL + Redis):
 
 ```bash
 docker compose up
 ```
 
-Starts PostgreSQL + Redis + payment-gateway with health checks.
-
-### Test merchant credentials
-
-```
-Merchant ID:  MCH-TESTSHOP
-API Key:      tk_live_a1b2c3d4e5f6g7h8i9j0
-Daily Limit:  KES 5,000,000
-```
-
-## Testing
+## Try It Out
 
 ```bash
-mvn test
+# 1. The seed merchant is ready to use
+#    API Key: tk_live_a1b2c3d4e5f6g7h8i9j0
+
+# 2. Process an M-Pesa payment
+curl -X POST http://localhost:8787/api/v1/payments \
+  -H "X-API-Key: tk_live_a1b2c3d4e5f6g7h8i9j0" \
+  -H "Content-Type: application/json" \
+  -d '{"paymentMethod":"MPESA_STK","amount":5000,"sourceAccount":"+254700000001","reference":"INV-001"}'
+
+# 3. Process a card payment (higher fee)
+curl -X POST http://localhost:8787/api/v1/payments \
+  -H "X-API-Key: tk_live_a1b2c3d4e5f6g7h8i9j0" \
+  -H "Content-Type: application/json" \
+  -d '{"paymentMethod":"CARD","amount":10000,"sourceAccount":"+254700000001","reference":"INV-002"}'
+
+# 4. Partial refund
+curl -X POST http://localhost:8787/api/v1/payments/MP.../refund \
+  -H "X-API-Key: tk_live_a1b2c3d4e5f6g7h8i9j0" \
+  -H "Content-Type: application/json" \
+  -d '{"amount":2000,"reason":"Item returned"}'
+
+# 5. Register a new merchant
+curl -X POST http://localhost:8787/api/v1/merchants \
+  -H "X-API-Key: tk_live_a1b2c3d4e5f6g7h8i9j0" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Coffee Shop Nairobi","callbackUrl":"https://myshop.co.ke/webhooks"}'
+
+# 6. Settle and reconcile
+curl -X POST http://localhost:8787/api/v1/payments/settle \
+  -H "X-API-Key: tk_live_a1b2c3d4e5f6g7h8i9j0"
 ```
 
-14 tests covering:
+## Fee Structure
 
-- M-Pesa STK, card, and bank transfer payment processing
-- Payment decline handling (simulated processor rejection)
-- Payment reversal with state validation
-- Cross-merchant reversal prevention
-- Settlement batching with fee calculation
-- Transaction retrieval and merchant analytics
-- Audit trail lifecycle tracking
-- HMAC signature generation, verification, and tamper detection
-- Rate limiting and idempotency behavior
-
-## Configuration
-
-| Property | Default | Description |
+| Payment Method | Rate | Minimum Fee |
 |---|---|---|
-| `gateway.security.hmac-secret` | (base64 key) | HMAC signing secret |
-| `gateway.security.max-timestamp-drift-seconds` | 300 | Max clock skew for signed requests |
-| `gateway.redis.enabled` | false | Enable Redis (falls back to in-memory) |
-| `gateway.webhook.timeout-ms` | 5000 | Webhook delivery timeout |
-| `gateway.webhook.max-retries` | 3 | Max webhook delivery attempts |
+| M-Pesa STK / C2B | 1.0% | KES 5 |
+| M-Pesa B2C | 1.5% | KES 5 |
+| Card | 2.5% | KES 10 |
+| Bank Transfer | 0.5% | KES 25 |
 
-## Production Considerations
+Fees are calculated per transaction and stored on each record. Settlement batches sum actual per-transaction fees instead of applying a flat rate.
 
-This project demonstrates the patterns. In a production deployment, you would additionally:
+## API Reference
 
-- **Encrypt sensitive fields** (account numbers, API secrets) at rest using column-level encryption
-- **Add Flyway/Liquibase** for versioned database migrations instead of `schema.sql`
-- **Deploy Redis in cluster mode** for HA idempotency and rate limiting
-- **Add OpenTelemetry** for distributed tracing across microservices
-- **Integrate with real payment processors** (Safaricom Daraja, Stripe, Flutterwave)
-- **Add PCI-DSS compliance** measures for card payment handling
-- **Set up Prometheus + Grafana** dashboards for transaction volume, latency percentiles, and error rates
+### Payments (requires API key)
+
+| Method | Endpoint | What it does |
+|---|---|---|
+| POST | `/api/v1/payments` | Initiate a payment |
+| GET | `/api/v1/payments/{txnId}` | Query payment status |
+| GET | `/api/v1/payments` | List merchant transactions (paginated) |
+| POST | `/api/v1/payments/{txnId}/reverse` | Full reversal |
+| POST | `/api/v1/payments/{txnId}/refund` | Partial or full refund |
+| GET | `/api/v1/payments/{txnId}/refunds` | List refunds for a transaction |
+| POST | `/api/v1/payments/settle` | Batch settle completed transactions |
+| GET | `/api/v1/payments/settle/{batchId}/reconcile` | Verify settlement totals |
+| GET | `/api/v1/payments/stats` | Transaction analytics |
+| GET | `/api/v1/payments/audit/{txnId}` | Audit trail |
+
+### Merchants (requires API key)
+
+| Method | Endpoint | What it does |
+|---|---|---|
+| POST | `/api/v1/merchants` | Register new merchant |
+| GET | `/api/v1/merchants` | List all merchants |
+| GET | `/api/v1/merchants/{id}` | Get merchant details |
+| PUT | `/api/v1/merchants/{id}/callback` | Update callback URL |
+| POST | `/api/v1/merchants/{id}/rotate-key` | Rotate API credentials |
+| POST | `/api/v1/merchants/{id}/activate` | Activate merchant |
+| POST | `/api/v1/merchants/{id}/deactivate` | Deactivate merchant |
+| PUT | `/api/v1/merchants/{id}/daily-limit` | Update daily limit |
+
+### Processor Callbacks (public)
+
+| Method | Endpoint | What it does |
+|---|---|---|
+| POST | `/api/callbacks/mpesa` | M-Pesa STK Push result callback |
+| POST | `/api/callbacks/card` | Card processor result callback |
+
+## Payment Lifecycle
+
+```
+Merchant sends POST /payments
+    |
+    v
+Rate limit check --> Idempotency check --> Daily limit check
+    |
+    v
+Create transaction (INITIATED) --> Calculate fee --> Process (PROCESSING)
+    |
+    v
+Processor result --> COMPLETED or FAILED
+    |
+    v
+Store idempotency result --> Deliver webhook to merchant
+    |
+    v
+Later: SETTLE --> RECONCILE
+    |
+    v
+If dispute: REFUND (partial or full)
+```
+
+## Built With
+
+Spring Boot 3.2, Java 17, Spring Data JPA, PostgreSQL (H2 for dev), Redis (in-memory fallback), Spring Boot Actuator, Docker + docker-compose, GitHub Actions CI.
+
+## Tests
+
+```bash
+mvn test   # 25 tests
+```
+
+**Unit tests (14):** M-Pesa/card/bank transfer processing, payment decline, reversal, cross-merchant reversal prevention, settlement with tiered fees, no-transaction settlement, transaction lookup, audit trail tracking, merchant stats, HMAC signing and tamper detection.
+
+**Integration tests (11):** API key rejection, authenticated payment, card vs M-Pesa fee comparison, partial refund with overpayment prevention, M-Pesa callback status update, transaction lookup via HTTP, merchant registration, settlement with fee breakdown, stats endpoint, correlation ID propagation, idempotency deduplication.
 
 ## License
 
