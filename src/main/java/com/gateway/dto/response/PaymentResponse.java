@@ -12,6 +12,7 @@ public class PaymentResponse {
     private String merchantId;
     private PaymentMethod paymentMethod;
     private BigDecimal amount;
+    private BigDecimal fee;
     private String currency;
     private PaymentStatus status;
     private String reference;

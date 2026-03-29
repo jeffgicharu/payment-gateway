@@ -23,6 +23,8 @@ public class PaymentTransaction {
     private PaymentMethod paymentMethod;
 
     private BigDecimal amount;
+    @Column(precision = 15, scale = 2)
+    private BigDecimal fee;
     private String currency;
 
     @Enumerated(EnumType.STRING)

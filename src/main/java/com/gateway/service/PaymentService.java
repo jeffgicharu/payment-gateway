@@ -33,8 +33,7 @@ public class PaymentService {
     private final IdempotencyService idempotencyService;
     private final RateLimitService rateLimitService;
     private final WebhookService webhookService;
-
-    private static final BigDecimal FEE_RATE = new BigDecimal("0.015");
+    private final FeeCalculator feeCalculator;
 
     @Transactional
     public PaymentResponse initiatePayment(String merchantId, PaymentRequest request, String correlationId) {
@@ -74,6 +73,7 @@ public class PaymentService {
                 .merchantId(merchantId)
                 .paymentMethod(request.getPaymentMethod())
                 .amount(request.getAmount())
+                .fee(feeCalculator.calculate(request.getPaymentMethod(), request.getAmount()))
                 .status(PaymentStatus.INITIATED)
                 .sourceAccount(request.getSourceAccount())
                 .destinationAccount(request.getDestinationAccount())
@@ -222,7 +222,9 @@ public class PaymentService {
         BigDecimal totalAmount = completed.stream()
                 .map(PaymentTransaction::getAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal totalFees = totalAmount.multiply(FEE_RATE).setScale(2, RoundingMode.HALF_UP);
+        BigDecimal totalFees = completed.stream()
+                .map(txn -> txn.getFee() != null ? txn.getFee() : feeCalculator.calculate(txn.getPaymentMethod(), txn.getAmount()))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal netAmount = totalAmount.subtract(totalFees);
 
         String batchId = "STL-" + UUID.randomUUID().toString().substring(0, 10).toUpperCase();
@@ -322,6 +324,7 @@ public class PaymentService {
                 .merchantId(txn.getMerchantId())
                 .paymentMethod(txn.getPaymentMethod())
                 .amount(txn.getAmount())
+                .fee(txn.getFee())
                 .currency(txn.getCurrency())
                 .status(txn.getStatus())
                 .reference(txn.getReference())

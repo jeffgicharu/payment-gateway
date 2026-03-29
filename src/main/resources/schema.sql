@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS payment_transactions (
     merchant_id VARCHAR(30) NOT NULL,
     payment_method VARCHAR(20) NOT NULL,
     amount DECIMAL(15,2) NOT NULL,
+    fee DECIMAL(15,2) DEFAULT 0,
     currency VARCHAR(3) NOT NULL DEFAULT 'KES',
     status VARCHAR(20) NOT NULL DEFAULT 'INITIATED',
     source_account VARCHAR(50),
