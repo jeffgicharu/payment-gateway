@@ -29,15 +29,34 @@ public class PaymentService {
     private final MerchantRepository merchantRepo;
     private final SettlementRepository settlementRepo;
     private final AuditLogRepository auditRepo;
-
-    private static final BigDecimal FEE_RATE = new BigDecimal("0.015"); // 1.5%
+    private final IdempotencyService idempotencyService;
+    private final RateLimitService rateLimitService;
+    private final WebhookService webhookService;
 
     @Transactional
     public PaymentResponse initiatePayment(String merchantId, PaymentRequest request, String correlationId) {
+        // Rate limit check
+        RateLimitService.RateLimitResult rateCheck = rateLimitService.check(merchantId);
+        if (!rateCheck.allowed()) {
+            return errorResponse(merchantId, request, correlationId, "RATE_LIMIT_EXCEEDED",
+                    "Too many requests. Try again in a moment.");
+        }
+
+        // Idempotency check
+        String idempotencyKey = merchantId + ":" + request.getReference();
+        if (!idempotencyService.tryAcquire(idempotencyKey)) {
+            String existingTxnId = idempotencyService.getStoredResult(idempotencyKey);
+            if (existingTxnId != null && !existingTxnId.equals("PROCESSING")) {
+                return toResponse(txnRepo.findByTransactionId(existingTxnId).orElseThrow());
+            }
+            return errorResponse(merchantId, request, correlationId, "DUPLICATE_REQUEST",
+                    "A payment with this reference is already being processed");
+        }
+
         Merchant merchant = merchantRepo.findByMerchantId(merchantId)
                 .orElseThrow(() -> new IllegalArgumentException("Merchant not found"));
 
-        // Check daily limit
+        // Daily limit check
         BigDecimal todayTotal = txnRepo.sumCompletedAmountSince(merchantId,
                 LocalDate.now().atStartOfDay());
         if (todayTotal.add(request.getAmount()).compareTo(merchant.getDailyLimit()) > 0) {
@@ -63,10 +82,17 @@ public class PaymentService {
 
         audit("TRANSACTION", txnId, "INITIATED", merchantId, null, txn.getStatus().name());
 
-        // Process payment (simulated)
         processPayment(txn);
 
-        log.info("[{}] Payment {} {} {} {} → {}",
+        // Store result for idempotency lookups
+        idempotencyService.storeResult(idempotencyKey, txnId);
+
+        // Trigger webhook delivery to merchant
+        if (merchant.getCallbackUrl() != null && !merchant.getCallbackUrl().isBlank()) {
+            webhookService.deliver(txn, merchant.getCallbackUrl(), merchant.getApiSecret());
+        }
+
+        log.info("[{}] Payment {} {} {} {} -> {}",
                 correlationId, txnId, request.getPaymentMethod(),
                 request.getAmount(), request.getSourceAccount(), txn.getStatus());
 
