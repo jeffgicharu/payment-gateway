@@ -95,6 +95,7 @@ CREATE INDEX IF NOT EXISTS idx_txn_initiated ON payment_transactions(initiated_a
 CREATE INDEX IF NOT EXISTS idx_webhook_txn ON webhook_deliveries(transaction_id);
 CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id);
 
--- Seed test merchant
-INSERT INTO merchants (merchant_id, name, api_key, api_secret, callback_url, daily_limit)
+-- Seed test merchant (MERGE to avoid duplicate on test re-runs)
+MERGE INTO merchants (merchant_id, name, api_key, api_secret, callback_url, daily_limit)
+KEY (merchant_id)
 VALUES ('MCH-TESTSHOP', 'Test Shop Kenya', 'tk_live_a1b2c3d4e5f6g7h8i9j0', 'sk_live_secret_key_for_hmac_signing_do_not_share', 'https://webhook.site/test', 5000000.00);
