@@ -33,6 +33,8 @@ public class PaymentService {
     private final RateLimitService rateLimitService;
     private final WebhookService webhookService;
 
+    private static final BigDecimal FEE_RATE = new BigDecimal("0.015");
+
     @Transactional
     public PaymentResponse initiatePayment(String merchantId, PaymentRequest request, String correlationId) {
         // Rate limit check
