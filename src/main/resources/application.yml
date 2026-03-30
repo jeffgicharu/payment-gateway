@@ -69,3 +69,17 @@ spring:
   jpa:
     hibernate:
       ddl-auto: none
+
+# OpenTelemetry Tracing
+management.tracing:
+  sampling:
+    probability: 1.0
+  propagation:
+    type: w3c
+
+otel:
+  exporter:
+    otlp:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318}
+  service:
+    name: payment-gateway
