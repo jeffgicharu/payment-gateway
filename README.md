@@ -165,7 +165,7 @@ If dispute: REFUND (partial or full)
 
 ## Built With
 
-Spring Boot 3.2, Java 17, Spring Data JPA, PostgreSQL (H2 for dev), Redis (in-memory fallback), Spring Boot Actuator, Docker + docker-compose, GitHub Actions CI.
+Spring Boot 3.2, Java 17, Spring Data JPA, PostgreSQL (H2 for dev), Redis (in-memory fallback), Spring Boot Actuator, Docker + docker-compose, Kubernetes + Helm, GitHub Actions CI, Prometheus metrics.
 
 ## Tests
 
@@ -176,6 +176,21 @@ mvn test   # 25 tests
 **Unit tests (14):** M-Pesa/card/bank transfer processing, payment decline, reversal, cross-merchant reversal prevention, settlement with tiered fees, no-transaction settlement, transaction lookup, audit trail tracking, merchant stats, HMAC signing and tamper detection.
 
 **Integration tests (11):** API key rejection, authenticated payment, card vs M-Pesa fee comparison, partial refund with overpayment prevention, M-Pesa callback status update, transaction lookup via HTTP, merchant registration, settlement with fee breakdown, stats endpoint, correlation ID propagation, idempotency deduplication.
+
+## Performance Testing
+
+JMeter test plans are in `src/test/jmeter/`. Two scenarios:
+
+- **200 concurrent users** processing payments for 2 minutes: initiate M-Pesa payment, query status, get merchant stats. Extracts transaction ID between requests for realistic chaining. Response time assertions: 2s for payment initiation, 500ms for status query.
+- **500 user burst** in 5 seconds to test rate limiting behavior under sudden traffic spikes.
+
+Run with: `jmeter -n -t src/test/jmeter/payment-gateway-load-test.jmx -l results.jtl`
+
+## Code Quality
+
+- **JaCoCo** code coverage with threshold enforcement and CI artifact upload
+- **SonarCloud** static analysis for bugs, code smells, and security vulnerabilities
+- **OWASP Dependency Check** scanning for known CVEs in dependencies
 
 ## License
 
